@@ -24,8 +24,8 @@ expr = infixNotation(
     ],
 )
 
-
-print(expr.parseString("('germany' - berlin) + ('united kingdom' + bridge)"))
+express = expr.parseString("('germany' - berlin) + ('united kingdom' + bridge)")
+print(express)
 print(expr.parseString("('lion' + tiger) / 2"))
 
 print(np.array([1,2,3]) + 2)

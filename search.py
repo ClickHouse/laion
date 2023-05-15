@@ -2,6 +2,7 @@
 import argparse
 import os
 import sys
+from typing import List
 
 import numpy as np
 import time
@@ -12,6 +13,7 @@ import clickhouse_connect
 import clip
 import torch
 from pyparsing import *
+from dataclasses import dataclass
 
 ppc = pyparsing_common
 
@@ -20,8 +22,9 @@ def _search(client, table, column, features, limit=10):
     st = time.time()
     order = "ASC"
     columns = ['url', 'caption', f'L2Distance({column},{features}) AS score', column]
-    result = client.query(
-        f'SELECT {",".join(columns)} FROM {table} ORDER BY score {order} LIMIT {limit}')
+    query = f'SELECT {",".join(columns)} FROM {table} ORDER BY score {order} LIMIT {limit}'
+    print(query)
+    result = client.query(query)
     et = time.time()
     rows = [{
         'url': row[0],
@@ -55,43 +58,61 @@ def search_with_images(client, model, table, image_url, limit=10):
         return rows, stats
 
 
-def text_concepts_to_vector(model, concepts):
-    operator = ''
-    features = []
-    for concept in concepts:
-        if type(concept) == str:
-            if concept in ['+', '-', '/', '*']:
-                operator = concept
-            else:
-                with torch.no_grad():
-                    features.append(np.array(model.encode_text(clip.tokenize(concept))[0].tolist()))
-        elif type(concept) == int:
-            features.append(concept)
-        else:
-            features.append(np.array((text_concepts_to_vector(model, concept))))
-    if len(features) != 2:
-        raise 'unbalanced expression - expected <concept> <operator> <concept>'
-    if operator == '+':
-        return features[0] + features[1]
-    elif operator == '-':
-        return features[0] - features[1]
-    elif operator == '/':
-        return features[0] / features[1]
-    elif operator == '*':
-        return features[0] * features[1]
+@dataclass
+class Expression:
+    text: str
+
+
+@dataclass
+class Feature:
+    vector: List[float]
+
+
+def concept_to_expression(concept):
+    if type(concept) == str:
+        with torch.no_grad():
+            return Feature(model.encode_text(clip.tokenize(concept))[0].tolist())
+    elif type(concept) == int or type(concept) == Expression or type(concept) == Feature:
+        return concept
     else:
-        raise f'unknown operator {operator}'
+        return text_concepts_to_vector(model, concept)
+
+
+def concept_to_str(concept):
+    if type(concept) == Feature:
+        return f'[{",".join(map(str, concept.vector))}]'
+    elif type(concept) == Expression:
+        return concept.text
+    return str(concept)
+
+
+def text_concepts_to_vector(model, concepts):
+    if len(concepts) != 3:
+        raise 'unbalanced expressions - must be "<concept> <operator> <concept>"'
+    left_concept = concept_to_expression(concepts[0])
+    operator = concepts[1]
+    if operator not in ['+', '-', '/', '*']:
+        raise f'{operator} is not a valid operator'
+    right_concept = concept_to_expression(concepts[2])
+    if type(left_concept) == int and type(right_concept):
+        raise 'unbalanced expressions - must be "<concept> <operator> <concept>"'
+    if type(left_concept) == int:
+        return Expression(f'arrayMap(x -> {left_concept}{operator}x, {concept_to_str(right_concept)})')
+    elif type(right_concept) == int:
+        return Expression(f'arrayMap(x -> x{operator}{right_concept}, {concept_to_str(left_concept)})')
+    else:
+        return Expression(f'arrayMap((x,y) -> x{operator}y, {concept_to_str(left_concept)}, '
+                          f'{concept_to_str(right_concept)})')
 
 
 def text_inflix_expression_to_vector(client, model, table, concepts, limit=10):
     st = time.time()
-    print(concepts[0])
     features = text_concepts_to_vector(model, concepts[0])
     et = time.time()
     # this will be an image embedding, use this to find similar images based on caption
-    #rows, stats = _search(client, table, 'image_embedding', features.tolist(), limit=limit)
+    rows, stats = _search(client, table, 'image_embedding', features.text, limit=limit)
     stats['generation_time'] = round(et - st, 3)
-    return [], stats
+    return rows, stats
 
 
 def link(uri, label=None):
@@ -100,7 +121,6 @@ def link(uri, label=None):
     parameters = ''
     escape_mask = '\033]8;{};{}\033\\{}\033]8;;\033\\'
     return escape_mask.format(parameters, uri, label)
-
 
 
 ParserElement.enablePackrat()
@@ -131,7 +151,8 @@ if __name__ == '__main__':
     client = clickhouse_connect.get_client(host=os.environ.get('CLICKHOUSE_HOST', 'localhost'),
                                            username=os.environ.get('CLICKHOUSE_USERNAME', 'default'),
                                            password=os.environ.get('CLICKHOUSE_PASSWORD', ''),
-                                           port=os.environ.get('CLICKHOUSE_PORT', 8443))
+                                           port=os.environ.get('CLICKHOUSE_PORT', 8443),
+                                           secure=True if os.environ.get('CLICKHOUSE_SSL', 'True') == 'True' else False)
     sub_parsers = parser.add_subparsers(dest='command')
 
     search_parser = sub_parsers.add_parser('search', help='search using text or images')
@@ -139,8 +160,8 @@ if __name__ == '__main__':
     search_parser_params.add_argument('--text', required=False)
     search_parser_params.add_argument('--image', required=False)
 
-    blend_image_parser = sub_parsers.add_parser('concept_math', help='blend two concepts from images')
-    blend_image_parser.add_argument('--text', required=True)
+    concept_parser = sub_parsers.add_parser('concept_math', help='blend two concepts from images')
+    concept_parser.add_argument('--text', required=True)
 
     parser.add_argument('--table', default='laion_100m')
     parser.add_argument('--limit', default=10)
@@ -164,7 +185,6 @@ if __name__ == '__main__':
         text = args.text
         concepts = expr.parseString(args.text)
         images, stats = text_inflix_expression_to_vector(client, model, args.table, concepts, limit=args.limit)
-        sys.exit(0)
 
     environment = Environment(loader=FileSystemLoader("templates/"))
     template = environment.get_template("results.html")

@@ -11,8 +11,6 @@ if __name__ == '__main__':
     group = parser.add_mutually_exclusive_group(required=True)
     group.add_argument('--text', required=False)
     group.add_argument('--image', required=False)
-    parser.add_argument('--limit', default=1)
-    parser.add_argument('--table', default='laion_1m')
     args = parser.parse_args()
     device = "cuda" if torch.cuda.is_available() else "cpu"
     print(f"using {device}")
