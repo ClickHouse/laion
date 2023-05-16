@@ -6,9 +6,9 @@ import pandas as pd
 import numpy as np
 from pathlib import Path
 import os
-import sys
 import pyarrow as pa
 import pyarrow.parquet as pq
+import argparse
 
 
 def process_file(output_directory, paths):
@@ -56,14 +56,14 @@ def process_file(output_directory, paths):
                 meta_chunk = batch.to_pandas()
                 # combine them
                 if im_emb is None:
-                    data = pd.concat([meta_chunk, pd.DataFrame({'image_embedding': [[0.0]*768] * len(meta_chunk)})],
+                    data = pd.concat([meta_chunk, pd.DataFrame({'image_embedding': [[0.0] * 768] * len(meta_chunk)})],
                                      axis=1, copy=False)
                 else:
                     data = pd.concat([meta_chunk, pd.DataFrame({'image_embedding': [*im_emb[i:i + len(meta_chunk)]]})],
                                      axis=1, copy=False)
                     data['image_embedding'] = [row.tolist() for row in data['image_embedding']]
                 if text_emb is None:
-                    data = pd.concat([data, pd.DataFrame({'text_embedding': [[0.0]*768] * len(meta_chunk)})],
+                    data = pd.concat([data, pd.DataFrame({'text_embedding': [[0.0] * 768] * len(meta_chunk)})],
                                      axis=1, copy=False)
                 else:
                     data = pd.concat([data, pd.DataFrame({'text_embedding': [*text_emb[i:i + len(meta_chunk)]]})],
@@ -93,23 +93,28 @@ def process_file(output_directory, paths):
 
 
 if __name__ == '__main__':
+    parser = argparse.ArgumentParser(
+        prog='process',
+        description='Convert laion metadata and embeddings into Parquet')
+    parser.add_argument('--input_folder', required=False, default='./laion2b-en-vit-l-14-embeddings')
+    parser.add_argument('--output_folder', required=False, default='./laion_combined')
+    parser.add_argument('--processes', required=False, default=mp.cpu_count(), type=int)
+    args = parser.parse_args()
     mp.freeze_support()
-    input_directory = sys.argv[1]
+    input_directory = args.input_folder
+    if not os.path.exists(args.output_folder):
+        os.makedirs(args.output_folder)
     processes = mp.cpu_count()
-    if len(sys.argv) > 2:
-        processes = int(sys.argv[2])
-    output_directory = input_directory
-    if len(sys.argv) > 3:
-        output_directory = sys.argv[3]
-    meta_paths = Path(input_directory).glob('metadata_*.parquet')
+    processes = args.processes
+    meta_paths = Path(os.path.join(input_directory, 'metadata')).glob('metadata_*.parquet')
     ids = [os.path.splitext(os.path.basename(metadata_file))[0].split('_')[1] for metadata_file in meta_paths]
     ids = sorted(ids, key=lambda x: int(x))
-    jobs = [[id, os.path.join(input_directory, 'metadata_' + id + '.parquet'),
-             os.path.join(input_directory, 'img_emb_' + id + '.npy'),
-             os.path.join(input_directory, 'text_emb_' + id + '.npy')] for id in ids]
+    jobs = [[id, os.path.join(input_directory, 'metadata', 'metadata_' + id + '.parquet'),
+             os.path.join(input_directory, 'img_emb', 'img_emb_' + id + '.npy'),
+             os.path.join(input_directory, 'text_emb', 'text_emb_' + id + '.npy')] for id in ids]
     with mp.Pool(processes=processes) as pool:
         # issue a task and get the result
-        func = partial(process_file, output_directory)
+        func = partial(process_file, args.output_folder)
         results = pool.map(func, jobs, chunksize=1)
         for result in results:
             if not result['success']:

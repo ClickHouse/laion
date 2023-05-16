@@ -18,12 +18,12 @@ from dataclasses import dataclass
 ppc = pyparsing_common
 
 
-def _search(client, table, column, features, limit=10):
+def _search(client, table, column, features, limit=10, filter=''):
     st = time.time()
     order = "ASC"
     columns = ['url', 'caption', f'L2Distance({column},{features}) AS score', column]
-    query = f'SELECT {",".join(columns)} FROM {table} ORDER BY score {order} LIMIT {limit}'
-    print(query)
+    filter = f"WHERE {filter}" if filter != '' else ""
+    query = f'SELECT {",".join(columns)} FROM {table} {filter} ORDER BY score {order} LIMIT {limit}'
     result = client.query(query)
     et = time.time()
     rows = [{
@@ -36,24 +36,24 @@ def _search(client, table, column, features, limit=10):
     return rows, {'read_rows': result.summary['read_rows'], 'query_time': round(et - st, 3)}
 
 
-def search_with_text(client, model, table, text, limit=10):
+def search_with_text(client, model, table, text, limit=10, filter=''):
     st = time.time()
     inputs = clip.tokenize(text)
     with torch.no_grad():
         text_features = model.encode_text(inputs)[0].tolist()
         et = time.time()
-        rows, stats, = _search(client, table, 'image_embedding', text_features, limit=limit)
+        rows, stats, = _search(client, table, 'image_embedding', text_features, limit=limit, filter=filter)
         stats['generation_time'] = round(et - st, 3)
         return rows, stats
 
 
-def search_with_images(client, model, table, image_url, limit=10):
+def search_with_images(client, model, table, image_url, limit=10, filter=''):
     st = time.time()
     image = preprocess(Image.open(image_url)).unsqueeze(0).to(device)
     with torch.no_grad():
         image_features = model.encode_image(image)[0].tolist()
         et = time.time()
-        rows, stats = _search(client, table, 'text_embedding', image_features, limit=limit)
+        rows, stats = _search(client, table, 'text_embedding', image_features, limit=limit, filter=filter)
         stats['generation_time'] = round(et - st, 3)
         return rows, stats
 
@@ -163,8 +163,13 @@ if __name__ == '__main__':
     concept_parser = sub_parsers.add_parser('concept_math', help='blend two concepts from images')
     concept_parser.add_argument('--text', required=True)
 
-    parser.add_argument('--table', default='laion_100m')
-    parser.add_argument('--limit', default=10)
+    search_parser.add_argument('--table', default='laion_100m')
+    search_parser.add_argument('--limit', default=10)
+    search_parser.add_argument('--filter', required=False, default='')
+
+    concept_parser.add_argument('--table', default='laion_100m')
+    concept_parser.add_argument('--limit', default=10)
+    concept_parser.add_argument('--filter', required=False, default='')
     args = parser.parse_args()
     device = "cuda" if torch.cuda.is_available() else "cpu"
     device = torch.device(device)
@@ -177,10 +182,10 @@ if __name__ == '__main__':
     if args.command == 'search':
         if args.text:
             text = args.text
-            images, stats = search_with_text(client, model, args.table, text, limit=args.limit)
+            images, stats = search_with_text(client, model, args.table, text, limit=args.limit, filter=args.filter)
         else:
             image = args.image
-            images, stats = search_with_images(client, model, args.table, image, limit=args.limit)
+            images, stats = search_with_images(client, model, args.table, image, limit=args.limit, filter=args.filter)
     elif args.command == 'concept_math':
         text = args.text
         concepts = expr.parseString(args.text)

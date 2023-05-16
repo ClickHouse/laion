@@ -1,0 +1,13 @@
+<functions>
+    <function>
+        <type>executable</type>
+        <name>embedText</name>
+        <return_type>Array(Float32)</return_type>
+        <argument>
+		<type>String</type>
+        </argument>
+	<format>TabSeparated</format>
+        <command>embed_text.py</command>
+        <command_read_timeout>1000000</command_read_timeout>
+    </function>
+</functions>
