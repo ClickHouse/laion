@@ -420,7 +420,7 @@ python search.py search --image ridgeback.jpg
 ```
 
 
-![search results](images/search_results.png)
+![search results](images/ridgeback_search_results.png)
 
 
 For both of these above examples, we have matched embeddings for different modals e.g.  embeddings from image inputs are matched against the `text_embedding` column and vise versa. This aligns with the original model training as described earlier, and is the intended application. While matching input embeddings against the same type has been explore, previous attempts to do this have resulted in mixed [results](https://github.com/openai/CLIP/issues/1).
@@ -483,7 +483,7 @@ We have also added the ability to pass an additional filter to our search.py, al
 python search.py search --filter "(width >= 300) AND (height >= 500) AND (copyright = '') AND simularity > 0.3" --text "great animal migrations"
 ```
 
-![](images/great_migrations.png)
+![](images/great_migrations_results.png)
 
 As well as enabling filtering through a familar syntax, SQL allows us to allow perform aggregations. As a column-orientated database, ClickHouse is well suited to this task. Suppose we wanted to identify the primary camera models used for "safari pictures". Below we use the embedding for "safari pictures".
 
