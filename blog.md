@@ -1,82 +1,80 @@
 # Vector Search - Part 2
 
-This blog post continues our series on Vector Search, building on the previous post where we provided an overview of what Vector search is, its relation to historical inverted index-based approaches, possible use cases for which it currently delivers value and finally some high-level implementation approaches. In this post, we explore Vector Search with relation to ClickHouse in detail through practical examples as well as answering the question "When should i use ClickHouse for Vector Search?"
+This blog post continues our series on Vector Search, building on the previous post where we provided an overview of what Vector Search is, its relation to historical inverted index-based approaches, possible use cases for which it currently delivers value, and some high-level implementation approaches. In this post, we explore Vector Search in relation to ClickHouse in detail through practical examples as well as answering the question, "When should I use ClickHouse for Vector Search?"
 
-For our examples, we utilize a ClickHouse Cloud cluster with a total of N cores and XGB of RAM. This examples should, however, be reproducible on an equivalently sized self-managed cluster. Alternatively, start your ClickHouse Cloud cluster today, recieve $300 of credit,  let us worry about the infrastructure and get querying!
+For our examples, we utilize a ClickHouse Cloud cluster with a total of 60 cores and 240GB of RAM per node. These examples should, however, be reproducible on an equivalently sized self-managed cluster. Alternatively, start your ClickHouse Cloud cluster today, receive $300 of credit,  let us worry about the infrastructure, and get querying!
 
 ## When should i use ClickHouse for Vector Search?
 
-Prior to showing practical examples, lets address the main question most users have when discovering vector support in ClickHouse - When should i use ClickHouse for Vector Search?
+Prior to showing practical examples, let us address the main question most users have when discovering vector support in ClickHouse - When should I use ClickHouse for Vector Search?
 
-Firstly, ClickHouse is not "just" a vector database - its a real-time OLAP database with full SQL support and a wide range of analytical functions to assist users write analytical queries. Some of these functions, and data structures, allow ClickHouse to perform distance operations between vectors - thus allowing it to be used as a vector database. A fully parallelized query pipeline, that utililes the full compute capability of a machine, allows this matching to be performed very quickly, especially when performing exact matching through a linear scan over all rows - delivering performance comparable to dedicated vector databases. High levels of compressions, tunable through custom compression codecs, allow very large datasets to be potentially stored and queried. With a fully-fledged storage engine, ClickHouse is not memory-bound - allowing multi-TB datasets containining embeddings to be queried. Importantly, the capabilities which allow the distance between 2 vectors to be computed are just another SQL function - allowing them to combined with more traidtional SQL fitlering and aggregation capabilties. This allows vectors to be stored and queried alongside metadata (and even rich text).Finally, experimental Approximate Nearest Neighbour (ANN) indices, a feature of vector databases to allo faster approximate matching of vectors, provide a promising development which may further enhance the vector matching capabilities of ClickHouse. 
+Firstly, ClickHouse is not "just" a vector database - it's a real-time OLAP database with full SQL support and a wide range of analytical functions to assist users in writing analytical queries. Some of these functions and data structures allow ClickHouse to perform distance operations between vectors, thus allowing it to be used as a vector database. A fully parallelized query pipeline that utilizes the full compute capability of a machine allows this matching to be performed very quickly, especially when performing exact matching through a linear scan over all rows - delivering performance comparable to dedicated vector databases. High compression levels, tunable through custom compression codecs, allows very large datasets to be potentially stored and queried. With a fully-fledged storage engine, ClickHouse is not memory-bound - allowing multi-TB datasets containing embeddings to be queried. Notably, the capabilities which allow the distance between 2 vectors to be computed are just another SQL function - allowing them to be combined with more traditional SQL filtering and aggregation capabilities. This allows vectors to be stored and queried alongside metadata (and even rich text). Finally, experimental Approximate Nearest Neighbour (ANN) indices, a feature of vector databases to allow faster approximate matching of vectors, provide a promising development that may further enhance the vector matching capabilities of ClickHouse. 
 
-In summary, ClickHouse is approprate for vector matching when any of the following are true:
+In summary, ClickHouse is appropriate for vector matching when any of the following are true:
 
-- You need to perform linear distance matching over very large vector datasets, and wish to parallelise and distribute this work across many CPU cores with no additional work or configuration.
-- You need to match on vector datasets which of a size that relying on memory only indices is not viable either due to cost or avaibility of hardware
+- You need to perform linear distance matching over very large vector datasets and wish to parallelize and distribute this work across many CPU cores with no additional work or configuration.
+- You need to match on vector datasets of a size where relying on memory-only indices is not viable either due to cost or availability of hardware
 - You would benefit from full SQL support when querying your vectors and wish to combine matching will filtering on metadata (and text) and/or aggregation or join capabilities.
-- You have related data in ClickHouse already and do not wish to incur the overhead and cost of learning another tool for a few million vectors.
-- You have an existing embedding generation pipeline which produces your vectors for storage and do not need this capabiltiy to be native to your storage engine.
+- You already have related data in ClickHouse and do not wish to incur the overhead and cost of learning another tool for a few million vectors.
+- You have an existing embedding generation pipeline that produces your vectors and do not require this capability to be native to your storage engine.
 - You principally need fast parallelized exact matching of your vectors and do not need a production implementation of ANN (yet!)
 - You're an experienced or curious ClickHouse user and trust us to improve our vector matching capabilities and wish to be part of this journey!
 
-While this covers a wide range of use cases, there are cases ClickHouse would be less appropriate as a vector storage engine and you may wish to consider alternatives such as faiss or a dedicated vector database. In the interests of honesty and transparency, ClickHouse is probably not the best choice if:
+While this covers a wide range of use cases, there are cases ClickHouse would be less appropriate as a vector storage engine, and you may wish to consider alternatives such as [Faiss](https://github.com/facebookresearch/faiss) or a dedicated vector database. In the interests of honesty and transparency, ClickHouse is probably not the best choice if:
 
 - Your vector dataset is small and easily fits in memory.
 - You have no additional metadata with the vectors and need distance matching and sorting only.
-- You have very high QPS, greater than several thousand per second. Typically, for these usecases the dataset will fit in memory and matching times of a few ms are required. While ClickHouse can serve these usecases, a simple in memory index is probably sufficient.
-- You need a solution which includes embedding generation capabilties, where a model can be integrated at insert and query time. Vector databases, such as weviate, have pipelines specifically designed for this use case and be more appropriate should you be looking for a solution with OOTB models and accompanying tooling.
+- You have a very high QPS, greater than several thousand per second. Typically, for these use cases, the dataset will fit in memory, and matching times of a few ms are required. While ClickHouse can serve these use cases, a simple in-memory index is probably sufficient.
+- You need a solution that includes embedding generation capabilities, where a model can be integrated at insert and query time. Vector databases, such as Weviate, have pipelines specifically designed for this use case and be more appropriate should you seek a solution with OOTB models and accompanying tooling.
 
-With the above in mind, lets explore the vector capablities of ClickHouse.
+With the above in mind, lets explore the vector capabilities of ClickHouse.
 
 ## Selecting a dataset
 
-As discussed in our previous post, Vector search requires embeddings (vectors representing a contextual meaning) to be generated for a dataset. This requires a model to be produced through a Machine Learning training process, for which the dataset can subsequently be passed to generate an embedding for each object e.g. an image or piece of text. This process is typically involved and the subject of signfiicant research. With some of the latest approaches utilize a class of algorithms known as Transformers, this process is beyond the scope of this specific post. We defer this to a later post, utilizing a pre-prepared embeddings for the focus of this post: Search in ClickHouse. 
+As discussed in our previous post, Vector search requires embeddings (vectors representing a contextual meaning) to be generated for a dataset. This requires a model to be produced through a Machine Learning training process, for which the dataset can subsequently be passed through to generate an embedding for each object, e.g., an image or piece of text. This process is typically involved and the subject of significant research. With some of the latest approaches utilizing a class of algorithms known as Transformers, this process is beyond the scope of this specific post. We defer this to a later post and use a pre-prepared set of embeddings for the focus of this post: Vector Search in ClickHouse. 
 
-Fortunately, the embeddings for test datasets are available for download. Wanting to ensure we utilzied a test set of sufficient size with respect to both number of vectors and their dimensionality, we have selected the LAION 5billion test set. This consists of embeddings, with a dimension of 768, for several bllion public images on the internet and their captions. As of the time writing, we believe this to be largest available dataset of pre-computed embeddings available for testing. Although we utilize a subset of this data for our examples here, later posts will explore the full data in detail. 
+Fortunately, the embeddings for test datasets are available for download. Wanting to ensure we utilized a test set of sufficient size with respect to both the number of vectors and their dimensionality, we have selected the LAION 5 billion test set. This consists of embeddings, with a dimension of 768, for several billion public images on the internet and their captions. As of the time of writing, we believe this to be the largest available dataset of pre-computed embeddings available for testing. 
 
-As well as providing billions of embeddings with high dimensionality this test set includes metadata useful for illustrating the analytics capabilities of ClickHouse and how they can be used in conjunction with Vector search. This metadata is distributed seperately from the embeddings themselves, which are provided in `.xxx` format. We have combined these to produce a 5TB parquet dataset our users can download and use to reproduce examples.
+As well as providing billions of embeddings with high dimensionality, this test set includes metadata useful for illustrating the analytics capabilities of ClickHouse and how they can be used in conjunction with Vector search. This metadata is distributed separately from the embeddings themselves, which are provided in `npy` format. We have combined these to produce a 6TB parquet dataset our users can download and use to reproduce examples.
 
 ### The LAION dataset
 
-The LAION dataset was created with the explicit purpose of testing Vector search at scale. With over 5 billion emeddings in total, the dataset was generated for a set of images collected through a public crawl of the internet. An embedding is generated for each image and its associated caption - giving us two embeddings for each object. For this post we have focused on the english subset only, which consists of a reduced 2.2 billion objects. Although each of these objects has 2 embeddings, one for its image and caption repsetiveedly, we represent each object as a single row - giving us almost 2.2 billion rows in total. For each row we include the metadata as columns, which captures information such as the image dimensions and the simularity of the image and caption embedding. This similarity, a cosine distance, allows us to identify objects where the caption and image do not conceptually align - potentially filtering these out in queries (see later).
+The LAION dataset was created with the explicit purpose of testing Vector search at scale. With over 5 billion embeddings in total, the dataset was generated for a set of images collected through a public crawl of the internet. An embedding is generated for each image and its associated caption - giving us two embeddings for each object. For this post, we have focused on the English subset only, which consists of a reduced 2.2 billion objects. Although each of these objects has two embeddings, one for its image and one caption, respectively, we represent each object as a single row - giving us almost 2.2 billion rows in total and 4.4 billion vectors. For each row, we include the metadata as columns, which captures information such as the image dimensions and the similarity of the image and caption embedding. This similarity, a cosine distance, allows us to identify objects where the caption and image do not conceptually align - potentially filtering these out in queries (see later).
 
-We would like to acknowledge the effort required by the original authors to collate this dataset and produce the embeddings for public use. We recommend reading the full [process for generating](https://laion.ai/blog/laion-5b/) this dataset, which overcame a number of challenging large data engineering challenges such as downloading and resizing billions of images efficiently and in reasonable time.
+We want to acknowledge the effort required by the original authors to collate this dataset and produce the embeddings for public use. We recommend reading the full [process for generating](https://laion.ai/blog/laion-5b/) this dataset, which overcame a number of challenging data engineering challenges, such as downloading and resizing billions of images efficiently and in a reasonable time and at at low(ish) cost.
 
 ### The CLIP Model
 
-Before we describe how the LAION dataset can be downloaded and inserted into ClickHouse, we should how the embeddings for the images and caption are generated. They key outcome of this training process is that the embeddings for the two data types are comparable i.e. if the vector for an image and catpure are close, then they can be considered to conceptually. This ability to compare modals (data types), requires a multimodal machine learning algorithm. For this, the team at laion utilzied the [CLIP model by OpenAI](https://openai.com/research/clip). We briefly describe this below and encourage readers to read the full approach as [published by OpenAI](https://arxiv.org/pdf/2103.00020.pdf).
+Before we describe how the LAION dataset can be downloaded and inserted into ClickHouse, we briefly describe how the embeddings for the images and caption are generated. The key outcome of this training process is that the embeddings for the two data types are comparable, i.e., if the vector for an image and caption are close, then they can be considered conceptually similar. This ability to compare data types requires a multi-modal machine learning algorithm. For this, the team at LAION utilized a trained [CLIP model proposed by OpenAI](https://openai.com/research/clip). We briefly describe this below and encourage readers to read the full approach as [published by OpenAI](https://arxiv.org/pdf/2103.00020.pdf).
 
-CLIP (Contrastive Language–Image Pre-training) is a multi-modal model developed with a focus on the addressing the challenge of zero shot transfer. This aims to provide the ability to classify images with a relevant category for previously unknown images not seen during the training process. These prediction classes are also not required to be expliclty part of the original training set. This is particularly useful in scenarios where the training data may be limited or where new classes emerge over time. It allows the model to adapt and classify instances into new classes without requiring retraining on the entire dataset. 
+CLIP (Contrastive Language–Image Pre-training) is a multi-modal model developed with a focus on addressing the challenge of zero-shot transfer. This aims to provide the ability to classify images with a relevant category for previously unknown images not seen during the training process. These prediction classes are also not required to be explicitly part of the original training set. This is particularly useful in scenarios where the training data may be limited or where new classes emerge over time. It allows the model to adapt and classify instances into new classes without requiring retraining on the entire dataset. 
 
-To achieve this, CLIP uses a contrastive pre-training step to train a nuerel network, with a dataset of 400m images and text pairs from the internet as a training source. This requires a proxy or cost optimiatioin goal that reliues on the text and images being encoded into a high dimensional space using an encoder. The objective of the learning process is then to minimize the distance between the equiavlent encodings of an image and their known text snippets. 
+To achieve this, CLIP uses a contrastive pre-training step to train a neural network, with a dataset of 400m images and text pairs from the internet as a training source. This requires a proxy or cost optimization goal that relies on the text and images being encoded into a high-dimensional space using an encoder. The objective of the learning process is then to maximize the cosine distance between the equivalent encodings of an image and their known text snippets. 
 
-More specifically, a "good" model would result in close embeddings with respect to distance, or a high value close to 1 for cosine similarity, for an image and its associated vector. This is illustrated below in the image below where, T1 is the embedded reprepresnetation of the 1st image's snippet, and I1 is the the encoding of the image itself. This means we want to the diagnol of this matrix, where our images and text coincide, to be minminimized (assuming distance). Additionally, we want the to maximize the cost of the grey squares where the image and embeddings don't align. The trick of CLIP is to minimize and maximize these errors simultaneously. This is based on a  symmetric cross-entropy loss function which minimizes the cost in both direction i.e. I1, T2 and T2, I1. This isn't a cheap process! On 400m, this took around 30 days and needed 592 V100 GPUs (about $1m on AWS on demand instances). 
+More specifically, a "good" model would result in close embeddings with respect to distance, or a high value close to 1 for cosine similarity, for an image and its associated vector. This is illustrated below in the image below, where T1 is the embedded representation of the 1st image's snippet, and I1 is the encoding of the image itself. This means we want to maximize the diagonal of this matrix, where our images and text coincide. Additionally, we want to minimize the cost of the grey squares where the image and embeddings don't align. The trick of CLIP is to minimize and maximize these errors simultaneously. This is based on a  symmetric cross-entropy loss function that performs this cost optimization in both directions, i.e., I1, T2, and T2, I1. This isn't a cheap process! On 400m, this took around 30 days and needed 592 V100 GPUs (about $1m on AWS on-demand instances). 
 
 
 // image
 
-For the actual encoding of the images and test, the authors of CLIP used Resnet50 and Vision Transformer (ViT) for the image encoding and a Transformer (similar to GPT-2 style) as the backbone for the text encoder.  While we don't use in the post, CLIP has a 2nd step for zero-shot classification. Where previous approaches to this required the user to have known classification labels for the data before hand (maybe training a logistical regression on the image features and target classes), the CLIP model imposes no such constraints. Instead users simply provide a set of possible text snippets and encode these into text embeddings. The image for which a snippet is required is then also encoded, with CLIP providing a similarity score for the closest snippet - the prediction in effect.
+For the actual encoding of the images and test, the authors of CLIP used Resnet50 and Vision Transformer (ViT) for the image encoding and a Transformer (similar to GPT-2 style) as the backbone for the text encoder. While we don't use it in the post, CLIP has a 2nd step for zero-shot classification. Where previous approaches to this required the user to have known classification labels for the data beforehand (maybe training a logistical regression on the image features and target classes), the CLIP model imposes no such constraints. Instead, users simply provide a set of possible text snippets and encode these into text embeddings. The image for which a snippet is required is then also encoded, with CLIP providing a similarity score for the closest snippet - the prediction in effect.
 
 
 
 //image
 
 
-CLIP has proved effective at learning visual representations of text with promising results in OCR, geolocalisation and action recognition. Despite this, it does have some limitations in some domains, with no depth perception making it poor at distance prediction. Furthermore, it has been shown struggle with similar images as well as counting object.
-
+CLIP has proved effective at learning visual representations of text with promising results in OCR, geolocalisation, and action recognition. Despite this, it does have some limitations in some domains, with no depth perception making it poor at distance prediction. Furthermore, it has been shown to struggle with similar images as well as counting objects.
 
 For demonstrating vector search in ClickHouse, we utilise precomputed embeddings for around 2b images and their corresponding text snippets using the [clip retrieval tool](https://github.com/rom1504/clip-retrieval). These embeddings were generated using a CLIP model, specifically ViT-L/14, [trained by LAION](https://laion.ai/blog/large-openclip/). 
 
+Importantly, the authors also discarded images where the cosine similarity with the text caption was less than 0.28. Further filtering by image size, caption length, possible illegality, and removal of possible duplicates reduced the total dataset from over 50 billion.
 
-Importantly, the authors also discarded images where the cosine similarity with the text caption was less than 0.28. Further filtering by image size, caption length, possible illegality and removal of possible duplicates reduced the total dataset from over 50billion.
-
-By loading the resulting dataset into ClickHouse, we can find similar images to text promopts or possible snippets for specified images.
+By loading the resulting dataset into ClickHouse, we can find similar images to text prompts or possible snippets for specified images.
 
 
 ### Combining the data
 
-The LAINON dataset is downloadable from a number of sources. Selecting the English subset, we utilized the version hosted by Hugging Face. This service relies Git Large File Storage (GFS?), for which the user needs to install a client to download files from. Once installed, downloading the data requires a single command. For this ensure you have atleast 20TB of disk space available.
+The LAINON dataset is downloadable from a number of sources. Selecting the English subset, we utilized the version hosted by Hugging Face. This service relies on Git Large File Storage (LFS), which requires a client to be installed to download files. Once installed, downloading the data requires a single command. For this, ensure you have at least 20TB of disk space available.
 
 ```bash
 
@@ -422,7 +420,7 @@ python search.py search --image ridgeback.jpg
 ```
 
 
-![search results](./search_results.png)
+![search results](images/search_results.png)
 
 
 For both of these above examples, we have matched embeddings for different modals e.g.  embeddings from image inputs are matched against the `text_embedding` column and vise versa. This aligns with the original model training as described earlier, and is the intended application. While matching input embeddings against the same type has been explore, previous attempts to do this have resulted in mixed [results](https://github.com/openai/CLIP/issues/1).
@@ -437,7 +435,7 @@ Our previous examples have used a 10m sample of the 2 billion dataset. Due to th
 | laion_1m   | 1m          | 2.299s      | 0.292s     |
 | laion_10m  | 10m         | 12.851s     | 2.406s     |
 | laion_100m | 100m        | 111.857s    | 24.444s    |
-| laion_1b   | 1 billion   | 1337.886s   |            |
+| laion_1b   | 1 billion   | 1337.886s   | 1068.339s  |
 | laion_2b   | 2 billion   | 3163.470s   | 2730.828   |
 
 As shown, presence of data in the system caches makes a considerable difference on the performance of our linear scans. Performance remains approximately linear while our compressed data size can fit in RAM. Once this is no longer possible, performance degrades and is I/O bound. This highlights the importance of compression of our floating point data and the importance of potentially filtering our data before doing distance computations.
@@ -485,7 +483,7 @@ We have also added the ability to pass an additional filter to our search.py, al
 python search.py search --filter "(width >= 300) AND (height >= 500) AND (copyright = '') AND simularity > 0.3" --text "great animal migrations"
 ```
 
-![](./great_migrations.png)
+![](images/great_migrations.png)
 
 As well as enabling filtering through a familar syntax, SQL allows us to allow perform aggregations. As a column-orientated database, ClickHouse is well suited to this task. Suppose we wanted to identify the primary camera models used for "safari pictures". Below we use the embedding for "safari pictures".
 
@@ -654,7 +652,7 @@ The gains on our linear scan speed here are appreciable with the Bfloat16 varian
 python search.py search --text "a sleepy ridgeback dog" --table laion_100m_bfloat16
 ```
 
-![](./results_ridgeback_bfloat16.png)
+![](images/results_ridgeback_bfloat16.png)
 
 Whle the results remain relevant, and probably acceptable, there is clearly some reduction in search quality. This was alittle suprising as we expected it to have minmal effect initially. The `Float32` encoding is already a precision reduction on the `Float64` values produced by the model, however. Users will need to test this precision reduction technique on their specific model and dataset, with results likely varying case by case.
 
@@ -678,6 +676,10 @@ Annoy indexes are highly experimental in ClickHouse and should not be used in pr
 An Annoy index is a data structure used for finding approximate nearest neighbors in high-dimensional spaces. Annoy provides a trade-off between accuracy and computational efficiency, making it suitable for large-scale nearest neighbor search tasks. Annoy works by organanzing our vectors into a tree structure. It divides the high-dimensional spoace into partitions using random hyperplanes (lines in 2d space, planes in 3d etc). These hyperplanes split the space into smaller regions, with each region containing only a subset of the data points. These partitions are inturn used to build a tree structure (typically binary), where each node represents a hyperplane and the child nodes represent the regions spliby the plane. The leaf nodes of the tree contain our actual datra points. Balancing and optimization techniques, such as randomizing the insertion and using heuristics to determine the best hyperplanes for partitioning, ensuyre that the tree is efficient and well-balanced. 
 
 Once an Annoy index is constructed it can be used for search. On providing a vector the tree can be traversed by comparing each to each internal nodes hyperplanes. At each level of the tree, Annoy estimates the distance between the query vector and the regions represented by the child nodes. Distance measures determine which child node to explore further. On reaching either the root, or a specified node, the set of nodes it has encountered are returned. The result is an approximate set of results, with potentially much faster search times than a linear scan.
+
+
+//image
+
 
 In ClickHouse, the Annoy index can be used to speed up queries that either use a `ORDER BY DistanceFunction(Column, vector)` or a `WHERE DistanceFunction(Column, Point) < MaxDistance` but **not** both. A limit must be imposed on the query, which is used to build a priority queue based buffer for collecting the matching vectors. Once full, the collection stops and the buffer is sorted. The size of this buffer is limited by the setting `max_limit_for_ann_queries` (1000000 by default).
 
@@ -714,17 +716,47 @@ CREATE TABLE default.laion_100m_annoy
 )
 ENGINE = MergeTree
 ORDER BY (height, width, similarity)
+
+INSERT INTO laion_100m_annoy SELECT * FROM laion_100m
+
+0 rows in set. Elapsed: 1596.941 sec. Processed 100.00 million rows, 663.68 GB (62.62 thousand rows/s., 415.59 MB/s.)
 ```
+As shown, the overhead of the Annoy index is significant at insert time with the above insert taking around 27 mins for 100m rows. This compares to 27 mins for a table without these indexes.
 
 
+Below we repeat our [earlier query](https://gist.github.com/gingerwizard/dce9cecb59213a7b4911c0afccf98141) which tool approximately 24secs (hot) for Float32 values and 16s for bfloat16s.
 
 ```sql
+SELECT
+    url,
+    caption,
+    L2Distance(image_embedding, [embedding]) AS score
+FROM laion_100m_annoy
+ORDER BY score ASC
+LIMIT 10 FORMAT Vertical
 
+Row 1:
+──────
+url:     https://i.dailymail.co.uk/i/pix/2012/04/26/article-2135380-12C5ADBC000005DC-90_634x213.jpg
+caption: Pampered pets: This hammock-style dog bed offers equal levels of pet comfort
+score:   12.313203570174357
 
+Row 2:
+──────
+url:     https://i.pinimg.com/originals/15/c2/11/15c2118a862fcd0c4f9f6c960d2638a0.jpg
+caption: rhodesian ridgeback lab mix puppy
+score:   12.333195649580162
 
+10 rows in set. Elapsed: 1.456 sec. Processed 115.88 thousand rows, 379.06 MB (79.56 thousand rows/s., 260.27 MB/s.)
 ```
 
+This obviously delivers a huge improvement with respect to query performance, with this query taking between 1 and 2s. The test embedding here represents our "a sleepy ridgeback dog" text. We can see this results also remain relevant when using this table with the annoy index.
 
+```bash
+python search.py search --text "a sleepy ridgeback dog" --table laion_100m_annoy
+```
+
+![](images/ridgeback_annoy_100m.png)
 
 
 Annoy tuning is something we will defer to a later blog post, when the feature is more production ready.
@@ -769,7 +801,7 @@ Notice how we use the [`arrayMap`]() function to push down our point-wise additi
 python search.py compute_concept "(berlin - germany) + ('united kingdtom' + bridge)"
 ```
 
-![London Bridge](./london_bridge.png)
+![London Bridge](images/london_bridge.png)
 
 Cool! it works!  Notice how the text has no mention of London Bridge - the first image is actually part of Claude Monet [Waterloo Bridge](https://en.wikipedia.org/wiki/Waterloo_Bridge_(Monet_series)) series of paintings.
 
@@ -777,7 +809,7 @@ Finally, we thought enhancing the grammar parser to support integer constants co
 
 Executing this search actually produced something interesting:
 
-![Cubism and Surrealism](./cubism_surealism.png)
+![Cubism and Surrealism](images/cubism_surealism.png)
 
 We leave it to the artists in our readership to comment on the relevance accuracy here. 
 
