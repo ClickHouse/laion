@@ -18,11 +18,10 @@ if __name__ == '__main__':
     device = "cuda" if torch.cuda.is_available() else "cpu"
     print(f"using {device}")
     device = torch.device(device)
-    model, preprocess = clip.load("ViT-L/14")
-    model.to(device)
+    model, preprocess = clip.load("ViT-L/14", device=device)
     images = []
     if args.text:
-        inputs = clip.tokenize(args.text)
+        inputs = clip.tokenize(args.text).to(device)
         with torch.no_grad():
             print(model.encode_text(inputs)[0].tolist())
     elif args.image:
@@ -35,7 +34,7 @@ if __name__ == '__main__':
             c = 0
             for line in input_file:
                 c += 1
-                inputs = clip.tokenize(line)
+                inputs = clip.tokenize(line).to(device)
                 embedding = model.encode_text(inputs)[0].tolist()
                 output_file.write(f'{embedding}\n')
             et = time.time()

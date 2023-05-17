@@ -5,15 +5,8 @@
 
 ## Installation
 
-```bash
-    conda install --yes -c pytorch torchvision
-    pip install git+https://github.com/openai/CLIP.git
+1. Follow [instructions for CLIP](https://github.com/openai/CLIP).
+2. Install additional requirements
+    ```bash
     pip install -r requirements.txt
-
-```
-
-For machines with a nvidia GPU:
-
-```bash
-conda install --yes -c cudatoolkit=11.0
-```
+    ```
