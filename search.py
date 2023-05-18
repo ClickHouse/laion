@@ -4,7 +4,6 @@ import os
 import sys
 from typing import List
 
-import numpy as np
 import time
 import webbrowser
 from PIL import Image
